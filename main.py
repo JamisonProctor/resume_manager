@@ -1,7 +1,9 @@
 import os
 from dotenv import load_dotenv
 from pathlib import Path
+import sys
 from openai import OpenAI
+from utilities import ensure_log_exists
 
 load_dotenv()
 
@@ -27,6 +29,26 @@ model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 client = OpenAI(api_key=api_key)
 
-#iterate through each subdir in data_path
+
+def main() -> None:
+    missing_jd = []
+    created = 0
+
+    for subdir in sorted(p for p in data_path.iterdir() if p.is_dir()):
+        try:
+            if ensure_log_exists(subdir):
+                created += 1
+        except FileNotFoundError:
+            missing_jd.append(subdir)
+
+    print("Log initialization complete.")
+    print(f"Logs initialized: {created}")
+
+    if missing_jd:
+        print("Missing jd.md (skipped):", file=sys.stderr)
+        for p in missing_jd:
+            print(f"- {p}", file=sys.stderr)
 
 
+if __name__ == "__main__":
+    main()
