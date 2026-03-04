@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      # Persist the SQLite database outside the container
+      - ./resume_manager.sqlite3:/app/resume_manager.sqlite3
+      # Persist job artifacts (JDs, ATS reports, etc.)
+      - ./jobs:/app/jobs
+      # Resumes are read-only inside the container
+      # NOTE: .pages file text extraction requires macOS + Pages app and will
+      # not work in Docker. PDF resumes will work normally.
+      - ./resumes:/app/resumes:ro
+    restart: unless-stopped

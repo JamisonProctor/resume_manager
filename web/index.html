@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Job Hunt</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="logo">
+            <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/></svg>
+            <span class="logo-text">Job Hunt</span>
+          </div>
+          <div class="search-wrap">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input id="jobSearch" type="text" placeholder="Search jobs…" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="sort-bar">
+            <button class="sort-btn active" data-sort="status">Status</button>
+            <button class="sort-btn" data-sort="date">Date</button>
+            <button class="sort-btn" data-sort="az">A–Z</button>
+          </div>
+        </div>
+        <div id="jobs" class="job-list"></div>
+      </aside>
+
+      <main class="chat-wrap">
+        <div id="messages" class="messages"></div>
+        <div class="input-area">
+          <div id="url-badge" class="url-badge hidden">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Pipeline mode — job URL detected
+          </div>
+          <div class="composer">
+            <textarea id="input" rows="1" placeholder="Paste a job URL, or ask anything…" spellcheck="false"></textarea>
+            <button id="send" title="Send (Enter)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+          </div>
+          <div id="hint" class="hint">Enter ↵ to send · Shift+Enter for newline</div>
+        </div>
+      </main>
+
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

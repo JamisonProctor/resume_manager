@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from io import BytesIO
 import json
 import os
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 import traceback
 from typing import Iterable
 import logging
 import sys
+import zipfile
 
 from openai import OpenAI
 
@@ -100,11 +104,14 @@ def ensure_ats_report_exists(
     try:
         jd_text = jd_path.read_text(encoding="utf-8")
 
-        resume_pdf = _pick_resume_pdf(folder)
-        if resume_pdf is None:
+        resume_file = _pick_resume(folder)
+        if resume_file is None:
             return "error_missing_pdf"
 
-        resume_text = _read_pdf_text(resume_pdf)
+        if resume_file.suffix.lower() == ".pages":
+            resume_text = _read_pages_text(resume_file)
+        else:
+            resume_text = _read_pdf_text(resume_file)
 
         input_text = (
             ats_prompt
@@ -117,7 +124,7 @@ def ensure_ats_report_exists(
         raw_output = _call_openai_responses(client, model, input_text)
 
         report_obj = _parse_fixed_ats_report(raw_output)
-        report_obj["meta"] = {"resume_pdf_filename": resume_pdf.name, "jd_filename": jd_path.name}
+        report_obj["meta"] = {"resume_pdf_filename": resume_file.name, "jd_filename": jd_path.name}
 
         report_json_path.write_text(
             json.dumps(report_obj, indent=2, ensure_ascii=False) + "\n",
@@ -143,14 +150,93 @@ def _print_ats_error(folder: Path, message: str, verbose: bool) -> None:
     print(f"- {raw_path}", file=sys.stderr)
 
 
-def _pick_resume_pdf(folder: Path) -> Path | None:
-    pdfs = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"]
-    if not pdfs:
-        return None
+def _pick_resume(folder: Path) -> Path | None:
+    files = [p for p in folder.iterdir() if p.is_file()]
+    pages_files = [p for p in files if p.suffix.lower() == ".pages"]
+    pdf_files = [p for p in files if p.suffix.lower() == ".pdf"]
 
-    resume_pdfs = [p for p in pdfs if "resume" in p.name.lower()]
-    candidates = resume_pdfs if resume_pdfs else pdfs
-    return max(candidates, key=lambda p: p.stat().st_size)
+    # Prefer .pages over .pdf
+    if pages_files:
+        resume_pages = [p for p in pages_files if "resume" in p.name.lower()]
+        candidates = resume_pages if resume_pages else pages_files
+        return max(candidates, key=lambda p: p.stat().st_size)
+
+    if pdf_files:
+        resume_pdfs = [p for p in pdf_files if "resume" in p.name.lower()]
+        candidates = resume_pdfs if resume_pdfs else pdf_files
+        return max(candidates, key=lambda p: p.stat().st_size)
+
+    return None
+
+
+def _read_pages_text(pages_path: Path) -> str:
+    """Extract plain text from a .pages file.
+
+    Tries two strategies in order:
+    1. ZIP/QuickLook: for older Pages format that bundles QuickLook/Preview.pdf.
+    2. AppleScript: exports the document as plain text via Pages on macOS.
+    """
+    # Strategy 1: old Pages format — QuickLook/Preview.pdf inside the ZIP
+    try:
+        from pypdf import PdfReader
+        with zipfile.ZipFile(str(pages_path), "r") as z:
+            preview = next((n for n in z.namelist() if n.lower().endswith("preview.pdf")), None)
+            if preview:
+                pdf_bytes = z.read(preview)
+                pypdf_logger = logging.getLogger("pypdf")
+                old_level = pypdf_logger.level
+                pypdf_logger.setLevel(logging.ERROR)
+                try:
+                    reader = PdfReader(BytesIO(pdf_bytes), strict=False)
+                finally:
+                    pypdf_logger.setLevel(old_level)
+                return "\n\n".join(p.extract_text() or "" for p in reader.pages).strip()
+    except Exception:
+        pass  # fall through to AppleScript
+
+    # Strategy 2: AppleScript PDF export (macOS only, requires Pages)
+    try:
+        from pypdf import PdfReader
+    except ModuleNotFoundError as exc:
+        raise MissingDependencyError(
+            "Missing dependency: pypdf. Install it with `pip install pypdf`."
+        ) from exc
+
+    abs_path = str(pages_path.resolve())
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        tmp_path = Path(f.name)
+    try:
+        script = (
+            f'tell application "Pages"\n'
+            f'  set d to open POSIX file "{abs_path}"\n'
+            f'  export d to POSIX file "{str(tmp_path)}" as PDF\n'
+            f'  close d saving no\n'
+            f'end tell'
+        )
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            raise ValueError(
+                f"AppleScript export failed for {pages_path.name}: {result.stderr.strip()}"
+            )
+        pypdf_logger = logging.getLogger("pypdf")
+        old_level = pypdf_logger.level
+        pypdf_logger.setLevel(logging.ERROR)
+        try:
+            reader = PdfReader(str(tmp_path), strict=False)
+        finally:
+            pypdf_logger.setLevel(old_level)
+        return "\n\n".join(p.extract_text() or "" for p in reader.pages).strip()
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+# Keep old name as alias so any external callers don't break.
+_pick_resume_pdf = _pick_resume
 
 
 def _read_pdf_text(pdf_path: Path) -> str:

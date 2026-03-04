@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.DS_Store
+resume_manager.sqlite3
+jobs/
+resumes/
+outputs/
