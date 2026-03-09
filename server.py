@@ -201,7 +201,7 @@ def _route_message(client: OpenAI, model: str, message: str, context: list | Non
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "intent": {"type": "string", "enum": ["query", "update", "rename", "chat"]},
+            "intent": {"type": "string", "enum": ["query", "update", "rename", "chat", "coaching"]},
             "job_query": {"type": "string", "minLength": 1},
             "query_type": {
                 "type": "string",
@@ -257,9 +257,13 @@ def _route_message(client: OpenAI, model: str, message: str, context: list | Non
         "  Extract the target job in job_query, new company name in new_company, new job title in new_job_title. "
         "  Set query_type='none', events=[].\n"
         "- intent=chat: user is asking an open-ended question, comparing jobs, seeking advice, "
-        "  pasting a JD for discussion, or anything that doesn't fit query/update/rename. "
+        "  pasting a JD for discussion, or anything that doesn't fit query/update/rename/coaching. "
         "  Set query_type='none', events=[], new_company=null, new_job_title=null. "
         "  Put the most relevant company name in job_query (or 'none' if no company is relevant).\n"
+        "- intent=coaching: user is responding to resume coaching questions, providing information "
+        "  about their work experience, or continuing a coaching discussion about resume improvements. "
+        "  Use this when a COACHING SESSION is active and the user's message relates to it. "
+        "  Set query_type='none', events=[], new_company=null, new_job_title=null.\n"
         "- query_type=jd: user wants to see the job description text.\n"
         "- job_query: ONLY the company name — 1 to 3 words, never include a job title. "
         "  Examples: 'Grafana', 'Thales', 'Databricks'. "
@@ -393,7 +397,8 @@ def _chat_response(
     """Open-ended LLM response with full context for flexible conversation."""
     ctx_block = ""
     if context:
-        lines = [f"{m['role'].upper()}: {m['text']}" for m in context[-6:] if m.get("text")]
+        max_msgs = 30 if coaching_system else 6
+        lines = [f"{m['role'].upper()}: {m['text']}" for m in context[-max_msgs:] if m.get("text")]
         if lines:
             ctx_block = "\nRECENT CONVERSATION:\n" + "\n".join(lines) + "\n"
 
@@ -694,8 +699,19 @@ async def api_chat(request: Request) -> StreamingResponse:
                 if focused_job:
                     job_context_block = _build_job_context_block(focused_job)
 
+            # Hint the router about active coaching sessions
+            router_context_block = job_context_block
+            if focused_job and focused_job["ats_rejection_likelihood"] is not None and focused_job_id is not None:
+                coaching_history = db.get_conversation(conn, int(focused_job_id))
+                if coaching_history:
+                    router_context_block = (router_context_block or "") + (
+                        "\n\n[COACHING SESSION ACTIVE: There is an ongoing resume coaching "
+                        "conversation for this job. If the user appears to be responding to "
+                        "coaching questions or discussing their experience, use intent=coaching.]"
+                    )
+
             yield emit({"type": "status", "text": "Thinking…"})
-            routed = _route_message(client, model, message, context=context, job_context_block=job_context_block)
+            routed = _route_message(client, model, message, context=context, job_context_block=router_context_block)
             intent = str(routed.get("intent"))
             query = str(routed.get("job_query") or "").strip() or message
 
@@ -711,9 +727,12 @@ async def api_chat(request: Request) -> StreamingResponse:
                     if COACHING_PROMPT_PATH.exists():
                         coaching_system = COACHING_PROMPT_PATH.read_text(encoding="utf-8")
                     coaching_context = _build_job_context_block(focused_job, include_full_ats=True)
+                    # Use DB conversation history for full coaching context
+                    db_history = db.get_conversation(conn, int(focused_job_id))
+                    coaching_ctx = [{"role": m["role"], "text": m["text"]} for m in db_history]
                     answer_text = _chat_response(
                         client, model, message,
-                        context=context,
+                        context=coaching_ctx,
                         job_context_block=coaching_context,
                         coaching_system=coaching_system,
                     )
@@ -763,22 +782,46 @@ async def api_chat(request: Request) -> StreamingResponse:
                     db.save_message(conn, job_id=int(focused_job_id), role="assistant", text=answer_text)
                 return
 
+            # Coaching intent — resume coaching continuation
+            if intent == "coaching" and focused_job and focused_job_id is not None:
+                coaching_system = None
+                if COACHING_PROMPT_PATH.exists():
+                    coaching_system = COACHING_PROMPT_PATH.read_text(encoding="utf-8")
+                coaching_job_ctx = _build_job_context_block(focused_job, include_full_ats=True)
+                db_history = db.get_conversation(conn, int(focused_job_id))
+                coaching_ctx = [{"role": m["role"], "text": m["text"]} for m in db_history]
+                answer_text = _chat_response(
+                    client, model, message,
+                    context=coaching_ctx,
+                    job_context_block=coaching_job_ctx,
+                    coaching_system=coaching_system,
+                )
+                yield emit({"type": "answer", "text": answer_text})
+                db.save_message(conn, job_id=int(focused_job_id), role="user", text=message)
+                db.save_message(conn, job_id=int(focused_job_id), role="assistant", text=answer_text)
+                return
+
             # Chat intent — open-ended conversation with full context
             if intent == "chat":
                 # Use coaching prompt when job has ATS data
                 coaching_system = None
+                chat_context = context
                 if focused_job and focused_job["ats_rejection_likelihood"] is not None:
                     if COACHING_PROMPT_PATH.exists():
                         coaching_system = COACHING_PROMPT_PATH.read_text(encoding="utf-8")
                     # Upgrade context to include full ATS + resume
                     job_context_block = _build_job_context_block(focused_job, include_full_ats=True)
+                    # Use DB conversation history for full coaching context
+                    if focused_job_id is not None:
+                        db_history = db.get_conversation(conn, int(focused_job_id))
+                        chat_context = [{"role": m["role"], "text": m["text"]} for m in db_history]
 
                 related_block = _build_related_jobs_context(
                     conn, query, exclude_id=int(focused_job_id) if focused_job_id else None
                 )
                 answer_text = _chat_response(
                     client, model, message,
-                    context=context,
+                    context=chat_context,
                     job_context_block=job_context_block,
                     related_jobs_block=related_block or None,
                     coaching_system=coaching_system,
