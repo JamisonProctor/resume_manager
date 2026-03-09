@@ -15,12 +15,20 @@ function sortJobs(jobs) {
       const sa = STATUS_ORDER[a.status] ?? 2;
       const sb = STATUS_ORDER[b.status] ?? 2;
       if (sa !== sb) return sa - sb;
-      return (a.updated_at || "").localeCompare(b.updated_at || "");
+      return (a.last_activity || "").localeCompare(b.last_activity || "");
     });
   } else if (currentSort === "date") {
-    copy.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+    copy.sort((a, b) => (b.last_activity || "").localeCompare(a.last_activity || ""));
   } else if (currentSort === "az") {
     copy.sort((a, b) => (a.company || "").toLowerCase().localeCompare((b.company || "").toLowerCase()));
+  }
+  // Pin focused job to top
+  if (focusedJob) {
+    const idx = copy.findIndex(j => j.id === focusedJob.id);
+    if (idx > 0) {
+      const [pinned] = copy.splice(idx, 1);
+      copy.unshift(pinned);
+    }
   }
   return copy;
 }
@@ -217,12 +225,10 @@ async function focusJob(job) {
 
   focusedJob = job;
 
-  // Update active card highlight
-  document.querySelectorAll(".job-card").forEach(c => {
-    c.classList.toggle("active", c.dataset.jobId === String(job.id));
-  });
-
   renderFocusBanner(job);
+
+  // Re-render sidebar to pin focused job to top
+  await loadJobs($("jobSearch").value || "");
 
   // Clear chat
   $("messages").innerHTML = "";
@@ -300,11 +306,23 @@ async function loadJobs(q = "") {
     meta.appendChild(dot);
     meta.appendChild(document.createTextNode(j.status || "draft"));
 
-    if (j.updated_at) {
+    if (j.last_activity) {
       const dateEl = document.createElement("span");
       dateEl.className = "job-date";
-      dateEl.textContent = fmtDate(j.updated_at);
+      dateEl.textContent = fmtDate(j.last_activity);
       meta.appendChild(dateEl);
+    }
+
+    if (j.artifact_dir) {
+      const folderBtn = document.createElement("button");
+      folderBtn.className = "folder-btn";
+      folderBtn.title = "Open in Finder";
+      folderBtn.textContent = "\uD83D\uDCC2";
+      folderBtn.onclick = (e) => {
+        e.stopPropagation();
+        fetch(`/api/jobs/${j.id}/open-folder`, { method: "POST" });
+      };
+      meta.appendChild(folderBtn);
     }
 
     card.appendChild(meta);

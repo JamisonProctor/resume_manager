@@ -584,13 +584,29 @@ def api_jobs(q: str = "") -> dict:
                 "id": int(r["id"]),
                 "company": r["company"] or "",
                 "job_title": r["job_title"] or "",
-                "status": r["status"] or "",
+                "status": db.get_effective_status(conn, int(r["id"])),
                 "artifact_dir": r["artifact_dir"] or "",
                 "updated_at": r["updated_at"] or "",
+                "last_activity": r["last_activity"] or r["updated_at"] or "",
             }
             for r in rows
         ]
     }
+
+
+@app.post("/api/jobs/{job_id}/open-folder")
+def api_open_folder(job_id: int) -> dict:
+    import subprocess
+    conn = db.connect(DB_PATH)
+    db.init_db(conn)
+    job = db.get_job(conn, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    artifact_dir = job["artifact_dir"]
+    if not artifact_dir or not Path(artifact_dir).exists():
+        raise HTTPException(status_code=404, detail="Folder not found")
+    subprocess.Popen(["open", artifact_dir])
+    return {"ok": True}
 
 
 @app.post("/api/jobs/{job_id}/rerun-ats")
