@@ -156,7 +156,7 @@ def _build_job_context_block(job, *, include_full_ats: bool = False) -> str:
         ]
 
     # Full ATS report with all 8 requirements
-    if include_full_ats and job.get("artifact_dir"):
+    if include_full_ats and job["artifact_dir"]:
         report_path = Path(job["artifact_dir"]) / "ats_report.json"
         if report_path.exists():
             try:
