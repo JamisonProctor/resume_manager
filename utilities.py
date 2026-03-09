@@ -740,33 +740,19 @@ def _classify_event_type(text: str) -> str:
 
 
 def bootstrap_candidate_profile(resumes_root: Path, client: OpenAI, model: str) -> str:
-    """Read all resumes and merge into a comprehensive candidate profile via LLM."""
-    # Collect unique resume stems from both .pages and .pdf files
-    stems: set[str] = set()
-    for ext in ("*.pages", "*.pdf"):
-        for f in resumes_root.glob(ext):
-            stems.add(f.stem)
-    if not stems:
-        raise FileNotFoundError(f"No resume files found in {resumes_root}")
+    """Read all PDF resumes and merge into a comprehensive candidate profile via LLM."""
+    pdf_files = sorted(resumes_root.glob("*.pdf"))
+    if not pdf_files:
+        raise FileNotFoundError(f"No PDF files found in {resumes_root}")
 
     sections = []
-    for stem in sorted(stems):
-        text = ""
-        pages_file = resumes_root / f"{stem}.pages"
-        pdf_file = resumes_root / f"{stem}.pdf"
-        # Try .pages first (works on macOS), fall back to .pdf (works in Docker)
-        if pages_file.exists():
-            try:
-                text = _read_pages_text(pages_file)
-            except Exception:
-                pass
-        if not text.strip() and pdf_file.exists():
-            try:
-                text = _read_pdf_text(pdf_file)
-            except Exception as exc:
-                logging.warning("Failed to extract %s: %s", stem, exc)
-        if text.strip():
-            sections.append(f"=== RESUME: {stem} ===\n{text}")
+    for pdf_file in pdf_files:
+        try:
+            text = _read_pdf_text(pdf_file)
+            if text.strip():
+                sections.append(f"=== RESUME: {pdf_file.stem} ===\n{text}")
+        except Exception as exc:
+            logging.warning("Failed to extract %s: %s", pdf_file.name, exc)
 
     if not sections:
         raise RuntimeError("Could not extract text from any resume")
