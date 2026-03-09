@@ -227,20 +227,23 @@ def search_jobs(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[s
     return list(
         conn.execute(
             """
-            SELECT id, company, job_title, status, artifact_dir, updated_at
-            FROM jobs
-            WHERE company LIKE ? OR job_title LIKE ? OR artifact_dir LIKE ?
+            SELECT j.id, j.company, j.job_title, j.status, j.artifact_dir, j.updated_at,
+                   COALESCE(e.latest_event_date, j.updated_at) AS last_activity
+            FROM jobs j
+            LEFT JOIN (
+              SELECT job_id, MAX(event_date) AS latest_event_date
+              FROM events GROUP BY job_id
+            ) e ON e.job_id = j.id
+            WHERE j.company LIKE ? OR j.job_title LIKE ? OR j.artifact_dir LIKE ?
             ORDER BY
-              -- Open applications first, closed ones last
-              CASE status
+              CASE j.status
                 WHEN 'applied'    THEN 0
                 WHEN 'in_process' THEN 1
                 WHEN 'offer'      THEN 2
                 WHEN 'rejected'   THEN 3
                 ELSE 0
               END ASC,
-              -- Within each group: oldest update at top (most likely to need follow-up)
-              updated_at ASC
+              COALESCE(e.latest_event_date, j.updated_at) ASC
             LIMIT ?
             """,
             (q, q, q, limit),
