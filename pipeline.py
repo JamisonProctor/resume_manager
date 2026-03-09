@@ -219,12 +219,17 @@ def run_pipeline(
     # --- step: select_resume ---
     if state.step == "select_resume":
         yield {"type": "pipeline_step", "session_id": state.session_id, "text": "Selecting best resume..."}
-        pages_files = sorted(resumes_root.glob("*.pages"))
-        if not pages_files:
-            yield {"type": "pipeline_error", "text": "No .pages resumes found in resumes folder."}
+        # Collect all resumes; prefer .pages over .pdf when both exist for the same stem
+        all_files = sorted(resumes_root.iterdir())
+        pages_files = {p.stem: p for p in all_files if p.suffix.lower() == ".pages"}
+        pdf_files = {p.stem: p for p in all_files if p.suffix.lower() == ".pdf"}
+        # Merge: .pages wins over .pdf for the same stem
+        resume_map: dict[str, Path] = {**pdf_files, **pages_files}
+        if not resume_map:
+            yield {"type": "pipeline_error", "text": "No resumes (.pages or .pdf) found in resumes folder."}
             return
 
-        resume_names = [p.name for p in pages_files]
+        resume_names = [p.name for p in resume_map.values()]
         try:
             filename, reasoning, confidence = select_resume_llm(client, model, state.jd_text, resume_names)
         except Exception as exc:
@@ -252,10 +257,15 @@ def run_pipeline(
         # Write jd.md
         (job_dir / "jd.md").write_text(state.jd_text, encoding="utf-8")
 
-        # Copy selected resume
+        # Copy selected resume — always include the .pages version for editing
         src_resume = resumes_root / state.selected_resume
         if src_resume.exists():
             shutil.copy2(str(src_resume), str(job_dir / src_resume.name))
+        # If a PDF was selected but a .pages counterpart exists, copy that too
+        if src_resume.suffix.lower() == ".pdf":
+            pages_counterpart = src_resume.with_suffix(".pages")
+            if pages_counterpart.exists():
+                shutil.copy2(str(pages_counterpart), str(job_dir / pages_counterpart.name))
 
         try:
             job_id = db.create_job(

@@ -2,7 +2,7 @@ services:
   app:
     build: .
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file: .env
     volumes:
       # Persist the SQLite database outside the container
