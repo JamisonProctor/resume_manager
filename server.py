@@ -485,7 +485,10 @@ def _chat_response(
         )
 
     resp = client.responses.create(model=model, input="\n\n".join(parts))
-    return (getattr(resp, "output_text", "") or "").strip()
+    result = (getattr(resp, "output_text", "") or "").strip()
+    if not result:
+        return "I wasn't able to generate a response. Please try sending your message again."
+    return result
 
 
 def _run_pipeline_stream(state: PipelineState, user_input: str):

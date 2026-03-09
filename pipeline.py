@@ -426,5 +426,10 @@ def run_pipeline(
                         "job_id": state.job_id,
                         "text": coaching_text,
                     }
-            except Exception:
-                pass  # Coaching is best-effort; pipeline already succeeded
+            except Exception as exc:
+                yield {
+                    "type": "pipeline_coaching",
+                    "session_id": state.session_id,
+                    "job_id": state.job_id,
+                    "text": f"Coaching generation failed: {exc}. You can still chat with the coach by sending a message.",
+                }
