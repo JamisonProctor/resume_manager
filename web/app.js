@@ -371,6 +371,7 @@ async function sendMessage(message, jobId = null) {
   // Pipeline sub-elements created lazily on first pipeline event
   let stepLine   = null;  // <div class="step-line"> inside bubble
   let fieldsList = null;  // <div> container appended after stepLine
+  let coachingBubble = null; // spinner bubble shown while coaching generates
 
   function ensurePipeline() {
     if (stepLine) return;
@@ -507,7 +508,6 @@ async function sendMessage(message, jobId = null) {
         fieldsList.appendChild(card);
         scrollBottom();
 
-        currentSessionId = null;
         setHint("Enter ↵ to send · Shift+Enter for newline");
         await loadJobs($("jobSearch").value || "");
 
@@ -527,12 +527,23 @@ async function sendMessage(message, jobId = null) {
           });
         }
 
+        // Show coaching spinner if ATS report exists (coaching will follow)
+        if (evt.ats_report) {
+          const { bubble: cb } = addRow("ai");
+          setSpinner(cb, "Generating coaching assessment...");
+          coachingBubble = cb;
+        }
+
       // ── pipeline_coaching ───────────────────────────────────────────────
       } else if (evt.type === "pipeline_coaching") {
-        // Display coaching intro as an AI message bubble
-        const { bubble: coachBubble } = addRow("ai");
-        coachBubble.textContent = evt.text || "";
-        // Seed recent messages with coaching intro
+        // Replace coaching spinner with actual text, or create new bubble
+        if (coachingBubble) {
+          coachingBubble.textContent = evt.text || "";
+        } else {
+          const { bubble: cb } = addRow("ai");
+          cb.textContent = evt.text || "";
+          coachingBubble = cb;
+        }
         recentMessages.push({ role: "assistant", text: evt.text || "" });
         if (recentMessages.length > 10) recentMessages.splice(0, recentMessages.length - 10);
 
@@ -596,6 +607,11 @@ async function sendMessage(message, jobId = null) {
   // Defensive cleanup — if stream ended without explicit complete/error
   if (currentSessionId) {
     currentSessionId = null;
+  }
+
+  // Remove orphaned coaching spinner if coaching never arrived
+  if (coachingBubble && coachingBubble.querySelector(".spinner")) {
+    coachingBubble.closest(".msg-row")?.remove();
   }
 }
 

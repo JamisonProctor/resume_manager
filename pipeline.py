@@ -367,6 +367,7 @@ def run_pipeline(
 
         # --- Generate coaching intro via LLM ---
         if ats_report and state.job_id is not None:
+            yield {"type": "pipeline_step", "session_id": state.session_id, "text": "Generating coaching assessment..."}
             try:
                 coaching_prompt_path = Path(__file__).resolve().parent / "prompts" / "resume_coach.md"
                 coaching_system = coaching_prompt_path.read_text(encoding="utf-8") if coaching_prompt_path.exists() else ""
