@@ -386,11 +386,26 @@ def run_pipeline(
                 ats_context = json.dumps(ats_report, indent=2)
                 jd_text = state.jd_text[:6000]
 
+                # Load candidate master profile if available
+                profile_block = ""
+                try:
+                    profile = db.get_candidate_profile(conn)
+                    if profile:
+                        profile_block = (
+                            "\n\n=== CANDIDATE MASTER PROFILE ===\n"
+                            "(Full background across all resume variants. Check here for "
+                            "experience that addresses gaps but wasn't in this specific resume.)\n"
+                            + profile[:8000]
+                        )
+                except Exception:
+                    pass
+
                 coaching_input = (
                     coaching_system
                     + "\n\n=== ATS EVALUATION REPORT ===\n" + ats_context
                     + "\n\n=== JOB DESCRIPTION ===\n" + jd_text
                     + "\n\n=== RESUME TEXT ===\n" + resume_text[:6000]
+                    + profile_block
                     + "\n\nThis is your first message. Deliver the go/no-go assessment now."
                 )
 

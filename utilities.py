@@ -737,3 +737,42 @@ def _classify_event_type(text: str) -> str:
     if has("update", "next steps", "waiting", "told", "follow up"):
         return "update"
     return "unknown"
+
+
+def bootstrap_candidate_profile(resumes_root: Path, client: OpenAI, model: str) -> str:
+    """Read all resumes and merge into a comprehensive candidate profile via LLM."""
+    pages_files = sorted(resumes_root.glob("*.pages"))
+    if not pages_files:
+        raise FileNotFoundError(f"No .pages files found in {resumes_root}")
+
+    sections = []
+    for pf in pages_files:
+        try:
+            text = _read_pages_text(pf)
+            if text.strip():
+                sections.append(f"=== RESUME: {pf.name} ===\n{text}")
+        except Exception as exc:
+            logging.warning("Failed to extract %s: %s", pf.name, exc)
+
+    if not sections:
+        raise RuntimeError("Could not extract text from any resume")
+
+    combined = "\n\n".join(sections)
+    prompt = (
+        "You are building a comprehensive candidate profile by merging multiple resume variants.\n"
+        "Each resume below targets a different role type but represents the same person.\n\n"
+        f"{combined}\n\n"
+        "Create a structured candidate profile that captures ALL unique information across all resumes:\n"
+        "- Complete work history with all details, metrics, and achievements from any variant\n"
+        "- All skills, tools, technologies mentioned anywhere\n"
+        "- Education, certifications, languages\n"
+        "- Any domain expertise, industry knowledge\n"
+        "- Leadership experience, team sizes, budgets\n\n"
+        "Output as structured text organized by: Summary, Work History (by company/role, chronological), "
+        "Skills & Tools, Education, Domain Expertise.\n"
+        "Include EVERY fact and metric — this profile should be a superset of all resumes.\n"
+        "Do NOT invent information. Only include what is explicitly stated in the resumes."
+    )
+
+    resp = client.responses.create(model=model, input=prompt)
+    return getattr(resp, "output_text", "") or ""

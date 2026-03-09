@@ -58,6 +58,12 @@ def init_db(conn: sqlite3.Connection) -> None:
           created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_conversations_job_id ON conversations(job_id);
+
+        CREATE TABLE IF NOT EXISTS candidate_profile (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          profile_text TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        );
         """
     )
     _ensure_columns(conn)
@@ -425,3 +431,18 @@ def repair_bad_company_names(conn: sqlite3.Connection) -> int:
             )
             count += 1
     return count
+
+
+def get_candidate_profile(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute("SELECT profile_text FROM candidate_profile WHERE id = 1").fetchone()
+    return str(row["profile_text"]) if row else None
+
+
+def upsert_candidate_profile(conn: sqlite3.Connection, text: str) -> None:
+    ts = now_iso()
+    conn.execute(
+        "INSERT INTO candidate_profile(id, profile_text, updated_at) VALUES(1, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET profile_text=excluded.profile_text, updated_at=excluded.updated_at",
+        (text, ts),
+    )
+    conn.commit()

@@ -189,6 +189,23 @@ def _build_job_context_block(job, *, include_full_ats: bool = False) -> str:
             except Exception:
                 pass
 
+    # Include candidate master profile for coaching context
+    if include_full_ats:
+        try:
+            conn = db.connect(DB_PATH)
+            db.init_db(conn)
+            profile = db.get_candidate_profile(conn)
+            if profile:
+                lines += [
+                    "\n--- Candidate Master Profile ---",
+                    "(This is the candidate's full background across all resume variants. "
+                    "Check here for experience that may address ATS gaps but wasn't included "
+                    "in the specific resume used for this application.)",
+                    profile[:8000],
+                ]
+        except Exception:
+            pass
+
     jd = (job["jd_text"] or "").strip()
     if jd:
         lines += ["\n--- Full Job Description ---", jd]
@@ -383,6 +400,44 @@ def _build_related_jobs_context(conn, company_query: str, exclude_id: int | None
                 lines.append(f"  {e['event_date']}  {e['event_type']}{note}")
     lines.append("=== END RELATED JOBS ===")
     return "\n".join(lines)
+
+
+def _maybe_enrich_profile(client: OpenAI, model: str, message: str, conn) -> None:
+    """If user message contains new factual info about their experience, append to candidate profile."""
+    if len(message.strip()) < 25:
+        return  # Skip short replies like "yes" or "no"
+    extraction_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "has_new_info": {"type": "boolean"},
+            "info": {"type": "string"},
+        },
+        "required": ["has_new_info", "info"],
+    }
+    prompt = (
+        "The user said this during a resume coaching conversation:\n\n"
+        f"USER: {message}\n\n"
+        "Does this contain NEW factual information about the user's work experience, "
+        "skills, achievements, or professional background? Examples: managed a team, "
+        "worked with specific technology, led a project, handled compliance.\n"
+        "If yes, extract the key facts as concise bullet points.\n"
+        "If no (e.g. just 'yes', 'no', asking a question, or discussing resume wording), "
+        "set has_new_info=false and info=''."
+    )
+    try:
+        resp = client.responses.create(
+            model=model,
+            input=prompt,
+            text={"format": {"type": "json_schema", "name": "profile_enrichment", "strict": True, "schema": extraction_schema}},
+        )
+        data = json.loads(_extract_response_text(resp))
+        if data.get("has_new_info") and data.get("info", "").strip():
+            current = db.get_candidate_profile(conn) or ""
+            enrichment = f"\n\n[Coaching enrichment — {date.today().isoformat()}]\n{data['info'].strip()}"
+            db.upsert_candidate_profile(conn, current + enrichment)
+    except Exception:
+        pass  # Non-critical — don't break coaching flow
 
 
 def _chat_response(
@@ -644,6 +699,26 @@ def api_delete_job(job_id: int) -> dict:
     return {"deleted": True, "job_id": job_id}
 
 
+@app.post("/api/profile/bootstrap")
+def api_bootstrap_profile() -> dict:
+    from utilities import bootstrap_candidate_profile
+    conn = db.connect(DB_PATH)
+    db.init_db(conn)
+    client = _client()
+    model = _model()
+    profile_text = bootstrap_candidate_profile(RESUMES_ROOT, client, model)
+    db.upsert_candidate_profile(conn, profile_text)
+    return {"status": "ok", "length": len(profile_text)}
+
+
+@app.get("/api/profile")
+def api_get_profile() -> dict:
+    conn = db.connect(DB_PATH)
+    db.init_db(conn)
+    profile = db.get_candidate_profile(conn)
+    return {"profile_text": profile}
+
+
 @app.post("/api/chat")
 async def api_chat(request: Request) -> StreamingResponse:
     payload = await request.json()
@@ -799,6 +874,8 @@ async def api_chat(request: Request) -> StreamingResponse:
                 yield emit({"type": "answer", "text": answer_text})
                 db.save_message(conn, job_id=int(focused_job_id), role="user", text=message)
                 db.save_message(conn, job_id=int(focused_job_id), role="assistant", text=answer_text)
+                # Enrich candidate profile with any new facts from user's message
+                _maybe_enrich_profile(client, model, message, conn)
                 return
 
             # Chat intent — open-ended conversation with full context
