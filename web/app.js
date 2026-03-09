@@ -328,18 +328,6 @@ async function loadJobs(q = "") {
       meta.appendChild(dateEl);
     }
 
-    if (j.artifact_dir) {
-      const folderBtn = document.createElement("button");
-      folderBtn.className = "folder-btn";
-      folderBtn.title = "Open in Finder";
-      folderBtn.textContent = "\uD83D\uDCC2";
-      folderBtn.onclick = (e) => {
-        e.stopPropagation();
-        fetch(`/api/jobs/${j.id}/open-folder`, { method: "POST" });
-      };
-      meta.appendChild(folderBtn);
-    }
-
     card.appendChild(meta);
 
     card.dataset.jobId = String(j.id);
