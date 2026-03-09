@@ -115,6 +115,12 @@ function renderFocusBanner(job) {
   abandonBtn.onclick = () => abandonJob(job.id);
   actions.appendChild(abandonBtn);
 
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "focus-btn delete-btn";
+  deleteBtn.textContent = "Delete";
+  deleteBtn.onclick = () => deleteJob(job.id);
+  actions.appendChild(deleteBtn);
+
   banner.appendChild(actions);
 
   const dismiss = document.createElement("button");
@@ -165,6 +171,23 @@ async function abandonJob(jobId) {
     }
     addRow("ai", "Application abandoned. Moving on.");
     if (focusedJob) focusedJob.status = "abandoned";
+    await loadJobs($("jobSearch").value || "");
+  } catch (e) {
+    addRow("ai", `Error: ${e.message}`);
+  }
+}
+
+async function deleteJob(jobId) {
+  if (!confirm("Delete this job and all its files? This cannot be undone.")) return;
+
+  try {
+    const res = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed" }));
+      addRow("ai", `Failed to delete: ${err.detail || res.status}`);
+      return;
+    }
+    clearFocus();
     await loadJobs($("jobSearch").value || "");
   } catch (e) {
     addRow("ai", `Error: ${e.message}`);

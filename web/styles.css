@@ -444,6 +444,12 @@ textarea::placeholder { color: var(--muted); }
   color: var(--danger);
 }
 .abandon-btn:hover:not(:disabled) { background: rgba(248,81,73,0.18); }
+.delete-btn {
+  background: rgba(248,81,73,0.15);
+  border-color: rgba(248,81,73,0.4);
+  color: var(--danger);
+}
+.delete-btn:hover:not(:disabled) { background: rgba(248,81,73,0.3); }
 .focus-banner-dismiss {
   background: none;
   border: none;

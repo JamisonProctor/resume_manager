@@ -383,6 +383,12 @@ def get_conversation(conn: sqlite3.Connection, job_id: int, limit: int = 200) ->
     ).fetchall())
 
 
+def delete_job(conn: sqlite3.Connection, job_id: int) -> None:
+    """Delete a job and all related records (events, conversations via FK CASCADE)."""
+    conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+    conn.commit()
+
+
 def get_full_job(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
     return conn.execute(
         """SELECT id, company, job_title, status, artifact_dir, updated_at,

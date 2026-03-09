@@ -607,6 +607,28 @@ def api_abandon_job(job_id: int) -> dict:
     return {"status": "abandoned", "job_id": job_id}
 
 
+@app.delete("/api/jobs/{job_id}")
+def api_delete_job(job_id: int) -> dict:
+    import shutil
+    conn = db.connect(DB_PATH)
+    db.init_db(conn)
+    job = db.get_full_job(conn, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Delete artifact directory on disk
+    artifact_dir = job["artifact_dir"]
+    if artifact_dir:
+        dirpath = Path(artifact_dir)
+        if dirpath.exists():
+            shutil.rmtree(dirpath)
+
+    # Delete from DB (FK CASCADE handles events + conversations)
+    db.delete_job(conn, job_id)
+
+    return {"deleted": True, "job_id": job_id}
+
+
 @app.post("/api/chat")
 async def api_chat(request: Request) -> StreamingResponse:
     payload = await request.json()
@@ -673,6 +695,24 @@ async def api_chat(request: Request) -> StreamingResponse:
                 return f"{company} — {title} [{r['status']}]"
 
             if intent == "query":
+                # Re-route ATS-focused queries through coaching when ATS data exists
+                if focused_job and focused_job["ats_rejection_likelihood"] is not None:
+                    coaching_system = None
+                    if COACHING_PROMPT_PATH.exists():
+                        coaching_system = COACHING_PROMPT_PATH.read_text(encoding="utf-8")
+                    coaching_context = _build_job_context_block(focused_job, include_full_ats=True)
+                    answer_text = _chat_response(
+                        client, model, message,
+                        context=context,
+                        job_context_block=coaching_context,
+                        coaching_system=coaching_system,
+                    )
+                    yield emit({"type": "answer", "text": answer_text})
+                    if focused_job_id is not None:
+                        db.save_message(conn, job_id=int(focused_job_id), role="user", text=message)
+                        db.save_message(conn, job_id=int(focused_job_id), role="assistant", text=answer_text)
+                    return
+
                 query_type = str(routed.get("query_type") or "last_info")
                 if focused_job_id is not None and focused_job is not None:
                     resolved = int(focused_job_id)
