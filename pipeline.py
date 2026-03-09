@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from openai import OpenAI
 
 import db
-from utilities import ensure_ats_report_exists
+from utilities import ensure_ats_report_exists, _pick_resume, _read_pages_text, _read_pdf_text
 
 CONFIDENCE_THRESHOLD = 0.75
 
@@ -338,6 +338,16 @@ def run_pipeline(
 
         company = state.fields.get("company", "")
         job_title = state.fields.get("job_title", "")
+
+        # Load ATS report for the completion event
+        ats_report = None
+        report_path = job_dir / "ats_report.json"
+        if report_path.exists():
+            try:
+                ats_report = json.loads(report_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
         yield {
             "type": "pipeline_complete",
             "session_id": state.session_id,
@@ -347,9 +357,55 @@ def run_pipeline(
             "artifact_dir": state.artifact_dir,
             "selected_resume": state.selected_resume,
             "ats_result": result,
+            "ats_report": ats_report,
             "text": (
                 f"Done! Created **{company} — {job_title}**.\n"
                 f"Resume: {state.selected_resume}\n"
                 f"ATS eval: {result}"
             ),
         }
+
+        # --- Generate coaching intro via LLM ---
+        if ats_report and state.job_id is not None:
+            yield {"type": "pipeline_step", "session_id": state.session_id, "text": "Preparing coaching analysis..."}
+            try:
+                coaching_prompt_path = Path(__file__).resolve().parent / "prompts" / "resume_coach.md"
+                coaching_system = coaching_prompt_path.read_text(encoding="utf-8") if coaching_prompt_path.exists() else ""
+
+                # Build context: ATS report + resume text + JD
+                resume_text = ""
+                resume_file = _pick_resume(job_dir)
+                if resume_file:
+                    try:
+                        if resume_file.suffix.lower() == ".pages":
+                            resume_text = _read_pages_text(resume_file)
+                        else:
+                            resume_text = _read_pdf_text(resume_file)
+                    except Exception:
+                        pass
+
+                ats_context = json.dumps(ats_report, indent=2)
+                jd_text = state.jd_text[:6000]
+
+                coaching_input = (
+                    coaching_system
+                    + "\n\n=== ATS EVALUATION REPORT ===\n" + ats_context
+                    + "\n\n=== JOB DESCRIPTION ===\n" + jd_text
+                    + "\n\n=== RESUME TEXT ===\n" + resume_text[:6000]
+                    + "\n\nThis is your first message. Deliver the go/no-go assessment now."
+                )
+
+                resp = client.responses.create(model=model, input=coaching_input)
+                coaching_text = (getattr(resp, "output_text", "") or "").strip()
+
+                if coaching_text:
+                    # Save coaching intro to conversation history
+                    db.save_message(conn, job_id=state.job_id, role="assistant", text=coaching_text)
+                    yield {
+                        "type": "pipeline_coaching",
+                        "session_id": state.session_id,
+                        "job_id": state.job_id,
+                        "text": coaching_text,
+                    }
+            except Exception:
+                pass  # Coaching is best-effort; pipeline already succeeded

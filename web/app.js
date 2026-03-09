@@ -6,7 +6,7 @@ let currentSort      = "status";
 let focusedJob       = null; // { id, company, job_title, status } or null
 const recentMessages = []; // last N {role, text} for pronoun resolution
 
-const STATUS_ORDER = { in_process: 0, offer: 1, applied: 2, rejected: 3 };
+const STATUS_ORDER = { in_process: 0, offer: 1, applied: 2, rejected: 3, abandoned: 4 };
 
 function sortJobs(jobs) {
   const copy = [...jobs];
@@ -99,6 +99,24 @@ function renderFocusBanner(job) {
   label.textContent = job.company + (job.job_title ? ` — ${job.job_title}` : "");
   banner.appendChild(label);
 
+  // Action buttons
+  const actions = document.createElement("div");
+  actions.className = "focus-banner-actions";
+
+  const rerunBtn = document.createElement("button");
+  rerunBtn.className = "focus-btn rerun-btn";
+  rerunBtn.textContent = "Re-run ATS";
+  rerunBtn.onclick = () => rerunAts(job.id);
+  actions.appendChild(rerunBtn);
+
+  const abandonBtn = document.createElement("button");
+  abandonBtn.className = "focus-btn abandon-btn";
+  abandonBtn.textContent = "Abandon";
+  abandonBtn.onclick = () => abandonJob(job.id);
+  actions.appendChild(abandonBtn);
+
+  banner.appendChild(actions);
+
   const dismiss = document.createElement("button");
   dismiss.className = "focus-banner-dismiss";
   dismiss.textContent = "×";
@@ -107,6 +125,50 @@ function renderFocusBanner(job) {
 
   const chatWrap = document.querySelector(".chat-wrap");
   chatWrap.insertBefore(banner, chatWrap.firstChild);
+}
+
+async function rerunAts(jobId) {
+  const btn = document.querySelector(".rerun-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Running..."; }
+
+  const { bubble } = addRow("ai");
+  setSpinner(bubble, "Re-running ATS evaluation...");
+
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/rerun-ats`, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed" }));
+      bubble.textContent = `ATS re-run failed: ${err.detail || res.status}`;
+      return;
+    }
+    const data = await res.json();
+    bubble.textContent = data.comparison_text || "ATS re-evaluation complete.";
+    recentMessages.push({ role: "assistant", text: data.comparison_text || "" });
+    if (recentMessages.length > 10) recentMessages.splice(0, recentMessages.length - 10);
+  } catch (e) {
+    bubble.textContent = `Error: ${e.message}`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Re-run ATS"; }
+    scrollBottom();
+  }
+}
+
+async function abandonJob(jobId) {
+  if (!confirm("Abandon this application? This marks it as not worth pursuing.")) return;
+
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/abandon`, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed" }));
+      addRow("ai", `Failed to abandon: ${err.detail || res.status}`);
+      return;
+    }
+    addRow("ai", "Application abandoned. Moving on.");
+    if (focusedJob) focusedJob.status = "abandoned";
+    await loadJobs($("jobSearch").value || "");
+  } catch (e) {
+    addRow("ai", `Error: ${e.message}`);
+  }
 }
 
 async function loadConversation(jobId) {
@@ -192,6 +254,7 @@ async function loadJobs(q = "") {
     const card = document.createElement("div");
     card.className = "job-card";
     if (j.status === "rejected") card.classList.add("rejected");
+    if (j.status === "abandoned") card.classList.add("abandoned");
     const isUnknown = !j.company && !j.job_title;
     if (isUnknown) card.classList.add("unknown-data");
 
@@ -409,6 +472,31 @@ async function sendMessage(message, jobId = null) {
         currentSessionId = null;
         setHint("Enter ↵ to send · Shift+Enter for newline");
         await loadJobs($("jobSearch").value || "");
+
+        // Auto-focus the newly created job
+        if (evt.job_id) {
+          const newJob = {
+            id: evt.job_id,
+            company: evt.company || "",
+            job_title: evt.job_title || "",
+            status: "applied",
+          };
+          focusedJob = newJob;
+          renderFocusBanner(newJob);
+          // Highlight in sidebar
+          document.querySelectorAll(".job-card").forEach(c => {
+            c.classList.toggle("active", c.dataset.jobId === String(evt.job_id));
+          });
+        }
+
+      // ── pipeline_coaching ───────────────────────────────────────────────
+      } else if (evt.type === "pipeline_coaching") {
+        // Display coaching intro as an AI message bubble
+        const { bubble: coachBubble } = addRow("ai");
+        coachBubble.textContent = evt.text || "";
+        // Seed recent messages with coaching intro
+        recentMessages.push({ role: "assistant", text: evt.text || "" });
+        if (recentMessages.length > 10) recentMessages.splice(0, recentMessages.length - 10);
 
       // ── pipeline_error ────────────────────────────────────────────────────
       } else if (evt.type === "pipeline_error") {

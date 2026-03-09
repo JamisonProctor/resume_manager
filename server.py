@@ -25,6 +25,7 @@ WEB_DIR = REPO_ROOT / "web"
 ARTIFACTS_ROOT = REPO_ROOT / "jobs"
 RESUMES_ROOT = REPO_ROOT / "resumes"
 ATS_PROMPT_PATH = REPO_ROOT / "prompts" / "ats_eval.md"
+COACHING_PROMPT_PATH = REPO_ROOT / "prompts" / "resume_coach.md"
 
 pipeline_sessions: dict[str, PipelineState] = {}
 
@@ -133,7 +134,7 @@ def _find_jobs(conn, query: str, limit: int = 10) -> tuple[list, bool]:
     return [r for _, r in scored[:limit]], bool(scored)
 
 
-def _build_job_context_block(job) -> str:
+def _build_job_context_block(job, *, include_full_ats: bool = False) -> str:
     lines = ["=== FOCUSED JOB CONTEXT ==="]
     lines += [
         f"Company:         {job['company'] or '(unknown)'}",
@@ -146,12 +147,47 @@ def _build_job_context_block(job) -> str:
     if job["ats_rejection_likelihood"] is not None:
         def _jlist(v): return json.loads(v) if v else []
         lines += [
-            "\n--- ATS Evaluation ---",
+            "\n--- ATS Evaluation Summary ---",
             f"Rejection likelihood: {job['ats_rejection_likelihood']:.0%}",
             "Top strengths: " + "; ".join(_jlist(job["ats_top_strengths"])),
             "Top gaps: " + "; ".join(_jlist(job["ats_top_gaps"])),
             "Screen-out flags: " + ("; ".join(_jlist(job["ats_screen_out_flags"])) or "(none)"),
         ]
+
+    # Full ATS report with all 8 requirements
+    if include_full_ats and job.get("artifact_dir"):
+        report_path = Path(job["artifact_dir"]) / "ats_report.json"
+        if report_path.exists():
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                reqs = report.get("requirements", [])
+                if reqs:
+                    lines.append("\n--- Full ATS Requirements ---")
+                    for i, req in enumerate(reqs, 1):
+                        lines.append(
+                            f"REQ_{i}: {req.get('text', '?')} | "
+                            f"Status: {req.get('status', '?')} | "
+                            f"Evidence: {req.get('evidence') or 'none'} | "
+                            f"Rationale: {req.get('rationale', '')}"
+                        )
+            except Exception:
+                pass
+
+        # Include resume text for coaching context
+        from utilities import _pick_resume, _read_pages_text, _read_pdf_text
+        job_dir = Path(job["artifact_dir"])
+        resume_file = _pick_resume(job_dir)
+        if resume_file:
+            try:
+                if resume_file.suffix.lower() == ".pages":
+                    resume_text = _read_pages_text(resume_file)
+                else:
+                    resume_text = _read_pdf_text(resume_file)
+                if resume_text:
+                    lines += ["\n--- Resume Text ---", resume_text[:6000]]
+            except Exception:
+                pass
+
     jd = (job["jd_text"] or "").strip()
     if jd:
         lines += ["\n--- Full Job Description ---", jd]
@@ -351,6 +387,7 @@ def _chat_response(
     context: list | None = None,
     job_context_block: str | None = None,
     related_jobs_block: str | None = None,
+    coaching_system: str | None = None,
 ) -> str:
     """Open-ended LLM response with full context for flexible conversation."""
     ctx_block = ""
@@ -360,22 +397,31 @@ def _chat_response(
             ctx_block = "\nRECENT CONVERSATION:\n" + "\n".join(lines) + "\n"
 
     parts = []
+    if coaching_system:
+        parts.append(coaching_system)
     if job_context_block:
         parts.append(job_context_block)
     if related_jobs_block:
         parts.append(related_jobs_block)
 
     today = date.today().isoformat()
-    parts.append(
-        f"Today is {today}.\n"
-        "You are a helpful, thoughtful job hunt assistant. The user is managing their job search.\n"
-        "You have access to their job database context above. Use it to give informed, specific answers.\n"
-        "When comparing jobs, highlight meaningful differences in responsibilities, requirements, and focus areas.\n"
-        "Be concise but thorough. Use markdown formatting for readability.\n"
-        "Do not invent information not present in the context.\n"
-        + ctx_block
-        + f"\nUSER MESSAGE:\n{message}"
-    )
+    if coaching_system:
+        parts.append(
+            f"Today is {today}.\n"
+            + ctx_block
+            + f"\nUSER MESSAGE:\n{message}"
+        )
+    else:
+        parts.append(
+            f"Today is {today}.\n"
+            "You are a helpful, thoughtful job hunt assistant. The user is managing their job search.\n"
+            "You have access to their job database context above. Use it to give informed, specific answers.\n"
+            "When comparing jobs, highlight meaningful differences in responsibilities, requirements, and focus areas.\n"
+            "Be concise but thorough. Use markdown formatting for readability.\n"
+            "Do not invent information not present in the context.\n"
+            + ctx_block
+            + f"\nUSER MESSAGE:\n{message}"
+        )
 
     resp = client.responses.create(model=model, input="\n\n".join(parts))
     return (getattr(resp, "output_text", "") or "").strip()
@@ -395,13 +441,22 @@ def _run_pipeline_stream(state: PipelineState, user_input: str):
             return (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
 
         try:
+            saw_complete = False
             for event in run_pipeline(
                 state, user_input, conn, client, model,
                 ats_prompt, ARTIFACTS_ROOT, RESUMES_ROOT,
             ):
                 yield emit(event)
-                if event.get("type") in ("pipeline_complete", "pipeline_error"):
+                etype = event.get("type")
+                if etype == "pipeline_error":
                     pipeline_sessions.pop(state.session_id, None)
+                elif etype == "pipeline_complete":
+                    saw_complete = True
+                elif etype == "pipeline_coaching":
+                    pass  # coaching arrived after complete
+            # Clean up after generator finishes (handles both complete+coaching and complete-only)
+            if saw_complete:
+                pipeline_sessions.pop(state.session_id, None)
         except Exception as exc:
             pipeline_sessions.pop(state.session_id, None)
             yield emit({"type": "pipeline_error", "text": f"Pipeline crashed: {type(exc).__name__}: {exc}"})
@@ -466,6 +521,90 @@ def api_jobs(q: str = "") -> dict:
             for r in rows
         ]
     }
+
+
+@app.post("/api/jobs/{job_id}/rerun-ats")
+def api_rerun_ats(job_id: int) -> dict:
+    from utilities import archive_ats_report, ensure_ats_report_exists
+    conn = db.connect(DB_PATH)
+    db.init_db(conn)
+    job = db.get_full_job(conn, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job_dir = Path(job["artifact_dir"])
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Job folder not found")
+
+    # Read old rejection likelihood before archiving
+    old_likelihood = job["ats_rejection_likelihood"]
+
+    # Archive old report
+    archive_ats_report(job_dir)
+
+    # Run fresh ATS eval
+    client = _client()
+    model = _model()
+    ats_prompt = _ats_prompt()
+    result = ensure_ats_report_exists(job_dir, client, model, ats_prompt)
+
+    if result != "created":
+        raise HTTPException(status_code=500, detail=f"ATS eval failed: {result}")
+
+    # Load new report and store in DB
+    report_path = job_dir / "ats_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    new_likelihood = report.get("rejection_likelihood")
+
+    db.store_ats_results(
+        conn, job_id,
+        rejection_likelihood=new_likelihood,
+        top_gaps=report.get("top_gaps") or [],
+        top_strengths=report.get("top_strengths") or [],
+        screen_out_flags=report.get("screen_out_flags") or [],
+    )
+
+    # Build comparison message
+    comparison = f"**ATS Re-evaluation Complete**\n\nRejection likelihood: **{new_likelihood:.0%}**"
+    if old_likelihood is not None:
+        delta = new_likelihood - old_likelihood
+        direction = "improved" if delta < 0 else "worsened" if delta > 0 else "unchanged"
+        comparison += f"\nPrevious: {old_likelihood:.0%} → Now: {new_likelihood:.0%} ({direction})"
+    comparison += f"\nTop gaps: {'; '.join(report.get('top_gaps') or ['(none)'])}"
+    comparison += f"\nTop strengths: {'; '.join(report.get('top_strengths') or ['(none)'])}"
+
+    # Save as conversation message
+    db.save_message(conn, job_id=job_id, role="assistant", text=comparison)
+
+    return {
+        "result": result,
+        "rejection_likelihood": new_likelihood,
+        "old_rejection_likelihood": old_likelihood,
+        "top_gaps": report.get("top_gaps") or [],
+        "top_strengths": report.get("top_strengths") or [],
+        "screen_out_flags": report.get("screen_out_flags") or [],
+        "comparison_text": comparison,
+    }
+
+
+@app.post("/api/jobs/{job_id}/abandon")
+def api_abandon_job(job_id: int) -> dict:
+    conn = db.connect(DB_PATH)
+    db.init_db(conn)
+    job = db.get_job(conn, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    db.update_job_status(conn, job_id, "abandoned")
+    db.add_event(
+        conn,
+        job_id=job_id,
+        event_date=date.today().isoformat(),
+        event_type="abandoned",
+        note="Abandoned after coaching review",
+        raw_input=None,
+    )
+
+    return {"status": "abandoned", "job_id": job_id}
 
 
 @app.post("/api/chat")
@@ -576,6 +715,14 @@ async def api_chat(request: Request) -> StreamingResponse:
 
             # Chat intent — open-ended conversation with full context
             if intent == "chat":
+                # Use coaching prompt when job has ATS data
+                coaching_system = None
+                if focused_job and focused_job["ats_rejection_likelihood"] is not None:
+                    if COACHING_PROMPT_PATH.exists():
+                        coaching_system = COACHING_PROMPT_PATH.read_text(encoding="utf-8")
+                    # Upgrade context to include full ATS + resume
+                    job_context_block = _build_job_context_block(focused_job, include_full_ats=True)
+
                 related_block = _build_related_jobs_context(
                     conn, query, exclude_id=int(focused_job_id) if focused_job_id else None
                 )
@@ -584,6 +731,7 @@ async def api_chat(request: Request) -> StreamingResponse:
                     context=context,
                     job_context_block=job_context_block,
                     related_jobs_block=related_block or None,
+                    coaching_system=coaching_system,
                 )
                 yield emit({"type": "answer", "text": answer_text})
                 if focused_job_id is not None:

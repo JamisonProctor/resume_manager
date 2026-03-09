@@ -147,6 +147,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 .status-dot.in_process { background: var(--warn); }
 .status-dot.offer     { background: var(--ok); }
 .status-dot.rejected  { background: var(--danger); }
+.status-dot.abandoned { background: var(--muted); }
 
 .job-empty {
   padding: 20px 10px;
@@ -415,6 +416,34 @@ textarea::placeholder { color: var(--muted); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.focus-banner-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.focus-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--sans);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+}
+.focus-btn:disabled { opacity: 0.4; cursor: default; }
+.rerun-btn {
+  background: rgba(88,166,255,0.1);
+  border-color: rgba(88,166,255,0.3);
+  color: var(--accent);
+}
+.rerun-btn:hover:not(:disabled) { background: rgba(88,166,255,0.2); }
+.abandon-btn {
+  background: rgba(248,81,73,0.08);
+  border-color: rgba(248,81,73,0.25);
+  color: var(--danger);
+}
+.abandon-btn:hover:not(:disabled) { background: rgba(248,81,73,0.18); }
 .focus-banner-dismiss {
   background: none;
   border: none;
@@ -430,6 +459,7 @@ textarea::placeholder { color: var(--muted); }
 
 /* ── Job card variants ───────────────────────────── */
 .job-card.rejected    { opacity: 0.45; }
+.job-card.abandoned   { opacity: 0.35; }
 .job-card.unknown-data { border-left: 2px solid var(--warn); padding-left: 8px; }
 .job-card-title-sub   { font-size: 11px; color: var(--muted); margin-top: 1px;
                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

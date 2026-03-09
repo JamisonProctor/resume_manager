@@ -53,6 +53,20 @@ def _birth_timestamp(path: Path) -> float:
     return getattr(stat, "st_birthtime", stat.st_ctime)
 
 
+def archive_ats_report(folder: Path) -> Path | None:
+    """Rename ats_report.json (and _raw.txt) to timestamped backups. Returns archived path or None."""
+    report = folder / "ats_report.json"
+    if not report.exists():
+        return None
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archived = folder / f"ats_report_{ts}.json"
+    report.rename(archived)
+    raw = folder / "ats_report_raw.txt"
+    if raw.exists():
+        raw.rename(folder / f"ats_report_raw_{ts}.txt")
+    return archived
+
+
 def cleanup_ats_files(folder: Path, dry_run: bool = False) -> list[Path]:
     """
     Delete ATS artifacts in `folder` if they exist.
