@@ -195,40 +195,55 @@ async function deleteJob(jobId) {
 }
 
 async function loadConversation(jobId) {
-  const data = await fetch(`/api/jobs/${jobId}/conversation`).then(r => r.json());
-  if (!data.messages || data.messages.length === 0) {
-    const name = data.company || "this job";
-    addRow("ai", `Focused on ${name}. Ask me anything — I have the full JD, ATS report, and resume on hand.`);
-    return;
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/conversation`);
+    if (!res.ok) {
+      addRow("ai", `Could not load conversation (${res.status}).`);
+      return;
+    }
+    const data = await res.json();
+    if (!data.messages || data.messages.length === 0) {
+      const name = data.company || "this job";
+      addRow("ai", `Focused on ${name}. Ask me anything — I have the full JD, ATS report, and resume on hand.`);
+      return;
+    }
+    // Replay history
+    const toSeed = [];
+    for (const m of data.messages) {
+      addRow(m.role === "user" ? "user" : "ai", m.text);
+      toSeed.push({ role: m.role, text: m.text });
+    }
+    // Seed recentMessages with last 10
+    const seed = toSeed.slice(-10);
+    recentMessages.splice(0, recentMessages.length, ...seed);
+  } catch (err) {
+    console.error("loadConversation failed:", err);
+    addRow("ai", "Failed to load conversation history.");
   }
-  // Replay history
-  const toSeed = [];
-  for (const m of data.messages) {
-    addRow(m.role === "user" ? "user" : "ai", m.text);
-    toSeed.push({ role: m.role, text: m.text });
-  }
-  // Seed recentMessages with last 10
-  const seed = toSeed.slice(-10);
-  recentMessages.splice(0, recentMessages.length, ...seed);
 }
 
 async function focusJob(job) {
   if (currentSessionId) return; // don't interrupt an active pipeline
 
-  focusedJob = job;
+  try {
+    focusedJob = job;
 
-  // Update active card highlight
-  document.querySelectorAll(".job-card").forEach(c => {
-    c.classList.toggle("active", c.dataset.jobId === String(job.id));
-  });
+    // Update active card highlight
+    document.querySelectorAll(".job-card").forEach(c => {
+      c.classList.toggle("active", c.dataset.jobId === String(job.id));
+    });
 
-  renderFocusBanner(job);
+    renderFocusBanner(job);
 
-  // Clear chat
-  $("messages").innerHTML = "";
-  recentMessages.splice(0, recentMessages.length);
+    // Clear chat
+    $("messages").innerHTML = "";
+    recentMessages.splice(0, recentMessages.length);
 
-  await loadConversation(job.id);
+    await loadConversation(job.id);
+  } catch (err) {
+    console.error("focusJob failed:", err);
+    addRow("ai", "Something went wrong loading this job.");
+  }
 }
 
 function clearFocus() {
@@ -576,6 +591,11 @@ async function sendMessage(message, jobId = null) {
         bubble.textContent = evt.text || "Error";
       }
     }
+  }
+
+  // Defensive cleanup — if stream ended without explicit complete/error
+  if (currentSessionId) {
+    currentSessionId = null;
   }
 }
 
