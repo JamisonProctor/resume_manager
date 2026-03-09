@@ -164,7 +164,7 @@ def _route_message(client: OpenAI, model: str, message: str, context: list | Non
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "intent": {"type": "string", "enum": ["query", "update", "rename"]},
+            "intent": {"type": "string", "enum": ["query", "update", "rename", "chat"]},
             "job_query": {"type": "string", "minLength": 1},
             "query_type": {
                 "type": "string",
@@ -219,6 +219,10 @@ def _route_message(client: OpenAI, model: str, message: str, context: list | Non
         "- intent=rename: user wants to correct/change a company name or job title. "
         "  Extract the target job in job_query, new company name in new_company, new job title in new_job_title. "
         "  Set query_type='none', events=[].\n"
+        "- intent=chat: user is asking an open-ended question, comparing jobs, seeking advice, "
+        "  pasting a JD for discussion, or anything that doesn't fit query/update/rename. "
+        "  Set query_type='none', events=[], new_company=null, new_job_title=null. "
+        "  Put the most relevant company name in job_query (or 'none' if no company is relevant).\n"
         "- query_type=jd: user wants to see the job description text.\n"
         "- job_query: ONLY the company name — 1 to 3 words, never include a job title. "
         "  Examples: 'Grafana', 'Thales', 'Databricks'. "
@@ -307,6 +311,73 @@ def _naturalize(client: OpenAI, model: str, data: str, context: list | None = No
             + f"\nDATA:\n{data}"
         ),
     )
+    return (getattr(resp, "output_text", "") or "").strip()
+
+
+def _build_related_jobs_context(conn, company_query: str, exclude_id: int | None = None) -> str:
+    """Build a context block summarizing jobs related to a company query."""
+    if not company_query or company_query.lower() == "none":
+        return ""
+    candidates, _ = _find_jobs(conn, company_query, limit=5)
+    if not candidates:
+        return ""
+    lines = ["=== RELATED JOBS IN DATABASE ==="]
+    for row in candidates:
+        if exclude_id is not None and int(row["id"]) == exclude_id:
+            continue
+        job = db.get_full_job(conn, int(row["id"]))
+        if not job:
+            continue
+        lines.append(f"\n--- Job #{job['id']}: {job['company'] or '?'} — {job['job_title'] or '?'} ---")
+        lines.append(f"Status: {job['status'] or 'unknown'}")
+        jd = (job["jd_text"] or "").strip()
+        if jd:
+            # Include a truncated JD for comparison
+            lines.append(f"JD (first 2000 chars):\n{jd[:2000]}")
+        evts = db.list_events(conn, int(job["id"]), limit=5)
+        if evts:
+            lines.append("Recent events:")
+            for e in evts:
+                note = f" — {e['note']}" if e["note"] else ""
+                lines.append(f"  {e['event_date']}  {e['event_type']}{note}")
+    lines.append("=== END RELATED JOBS ===")
+    return "\n".join(lines)
+
+
+def _chat_response(
+    client: OpenAI,
+    model: str,
+    message: str,
+    context: list | None = None,
+    job_context_block: str | None = None,
+    related_jobs_block: str | None = None,
+) -> str:
+    """Open-ended LLM response with full context for flexible conversation."""
+    ctx_block = ""
+    if context:
+        lines = [f"{m['role'].upper()}: {m['text']}" for m in context[-6:] if m.get("text")]
+        if lines:
+            ctx_block = "\nRECENT CONVERSATION:\n" + "\n".join(lines) + "\n"
+
+    parts = []
+    if job_context_block:
+        parts.append(job_context_block)
+    if related_jobs_block:
+        parts.append(related_jobs_block)
+
+    today = date.today().isoformat()
+    parts.append(
+        f"Today is {today}.\n"
+        "You are a helpful, thoughtful job hunt assistant. The user is managing their job search.\n"
+        "You have access to their job database context above. Use it to give informed, specific answers.\n"
+        "When comparing jobs, highlight meaningful differences in responsibilities, requirements, and focus areas.\n"
+        "Be concise but thorough. Use markdown formatting for readability.\n"
+        "Do not invent information not present in the context.\n"
+        + ctx_block
+        + f"\nUSER MESSAGE:\n{message}"
+    )
+
+    resp = client.responses.create(model=model, input="\n\n".join(parts))
     return (getattr(resp, "output_text", "") or "").strip()
 
 
@@ -497,6 +568,23 @@ async def api_chat(request: Request) -> StreamingResponse:
                     return
                 natural = _naturalize(client, model, data, context=context, job_context_block=job_context_block)
                 answer_text = natural or data
+                yield emit({"type": "answer", "text": answer_text})
+                if focused_job_id is not None:
+                    db.save_message(conn, job_id=int(focused_job_id), role="user", text=message)
+                    db.save_message(conn, job_id=int(focused_job_id), role="assistant", text=answer_text)
+                return
+
+            # Chat intent — open-ended conversation with full context
+            if intent == "chat":
+                related_block = _build_related_jobs_context(
+                    conn, query, exclude_id=int(focused_job_id) if focused_job_id else None
+                )
+                answer_text = _chat_response(
+                    client, model, message,
+                    context=context,
+                    job_context_block=job_context_block,
+                    related_jobs_block=related_block or None,
+                )
                 yield emit({"type": "answer", "text": answer_text})
                 if focused_job_id is not None:
                     db.save_message(conn, job_id=int(focused_job_id), role="user", text=message)
