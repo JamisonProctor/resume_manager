@@ -291,9 +291,10 @@ def _call_openai_responses(client: OpenAI, model: str, input_text: str) -> str:
     Minimal, predictable OpenAI call for quick ATS insights.
     """
     params: dict = {"model": model, "input": input_text}
-    params["temperature"] = 0
     if model.startswith("gpt-5"):
         params["reasoning"] = {"effort": "low"}
+    elif not model.startswith(("o1", "o3")):
+        params["temperature"] = 0
 
     resp = client.responses.create(**params)
 

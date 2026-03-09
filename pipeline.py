@@ -320,6 +320,10 @@ def run_pipeline(
             yield {"type": "pipeline_error", "text": f"ATS eval failed: {exc}"}
             return
 
+        if result.startswith("error_"):
+            yield {"type": "pipeline_error", "text": f"ATS evaluation failed ({result}). You can re-run it from the job view."}
+            return
+
         if result == "created" and state.job_id is not None:
             report_path = job_dir / "ats_report.json"
             if report_path.exists():
