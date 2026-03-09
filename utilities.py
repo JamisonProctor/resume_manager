@@ -109,7 +109,15 @@ def ensure_ats_report_exists(
             return "error_missing_pdf"
 
         if resume_file.suffix.lower() == ".pages":
-            resume_text = _read_pages_text(resume_file)
+            try:
+                resume_text = _read_pages_text(resume_file)
+            except (FileNotFoundError, OSError):
+                # .pages extraction needs macOS/Pages; fall back to PDF counterpart
+                pdf_fallback = resume_file.with_suffix(".pdf")
+                if pdf_fallback.exists():
+                    resume_text = _read_pdf_text(pdf_fallback)
+                else:
+                    raise
         else:
             resume_text = _read_pdf_text(resume_file)
 
